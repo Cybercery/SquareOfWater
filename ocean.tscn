@@ -1,0 +1,22 @@
+[gd_scene format=3 uid="uid://b6h0bchpfwgne"]
+
+[ext_resource type="Script" uid="uid://bhmub7g7nca2r" path="res://ocean.gd" id="1_tiovm"]
+[ext_resource type="Shader" uid="uid://b0hxsh1deeb7f" path="res://ocean_material.gdshader" id="2_j38dg"]
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_tiovm"]
+render_priority = 0
+shader = ExtResource("2_j38dg")
+shader_parameter/time_scale = 1.0
+
+[sub_resource type="PlaneMesh" id="PlaneMesh_j38dg"]
+material = SubResource("ShaderMaterial_tiovm")
+size = Vector2(512, 512)
+subdivide_width = 512
+subdivide_depth = 512
+
+[node name="ocean" type="Node3D" unique_id=1323122401]
+script = ExtResource("1_tiovm")
+
+[node name="OceanMeshInstance3D" type="MeshInstance3D" parent="." unique_id=286864461]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -10.325134, 2.5437403, 8.583797)
+mesh = SubResource("PlaneMesh_j38dg")

@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://cvs1yt7mg54vk"
+path="res://.godot/imported/fft_pass.glsl-20e9ff2515b96daaddc4706e336b276f.res"
+
+[deps]
+
+source_file="res://fft_pass.glsl"
+dest_files=["res://.godot/imported/fft_pass.glsl-20e9ff2515b96daaddc4706e336b276f.res"]
+
+[params]
+

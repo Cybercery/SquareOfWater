@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://cv0ow4j7j5etn"
+path="res://.godot/imported/ocean_compute.glsl-dd15f91208a120a82d3ff2f96a121e21.res"
+
+[deps]
+
+source_file="res://ocean_compute.glsl"
+dest_files=["res://.godot/imported/ocean_compute.glsl-dd15f91208a120a82d3ff2f96a121e21.res"]
+
+[params]
+

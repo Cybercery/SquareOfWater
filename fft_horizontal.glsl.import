@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://bvhg5vptenru5"
+path="res://.godot/imported/fft_horizontal.glsl-8661badfab277cf8ff2e54436d9a7444.res"
+
+[deps]
+
+source_file="res://fft_horizontal.glsl"
+dest_files=["res://.godot/imported/fft_horizontal.glsl-8661badfab277cf8ff2e54436d9a7444.res"]
+
+[params]
+
