@@ -2,21 +2,44 @@
 
 [ext_resource type="Script" uid="uid://bhmub7g7nca2r" path="res://ocean.gd" id="1_tiovm"]
 [ext_resource type="Shader" uid="uid://b0hxsh1deeb7f" path="res://ocean_material.gdshader" id="2_j38dg"]
+[ext_resource type="Script" uid="uid://dm0qr37xrwifr" path="res://camera_3d.gd" id="3_nb2vx"]
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_tiovm"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_j38dg"]
 render_priority = 0
 shader = ExtResource("2_j38dg")
-shader_parameter/time_scale = 1.0
+shader_parameter/height_scale = 1.0
+shader_parameter/patch_size_0 = 512.0
+shader_parameter/patch_size_1 = 128.0
+shader_parameter/patch_size_2 = 32.0
 
 [sub_resource type="PlaneMesh" id="PlaneMesh_j38dg"]
-material = SubResource("ShaderMaterial_tiovm")
+material = SubResource("ShaderMaterial_j38dg")
 size = Vector2(512, 512)
-subdivide_width = 512
-subdivide_depth = 512
+subdivide_width = 1024
+subdivide_depth = 1024
+
+[sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_nb2vx"]
+
+[sub_resource type="Sky" id="Sky_bwgqs"]
+sky_material = SubResource("ProceduralSkyMaterial_nb2vx")
+
+[sub_resource type="Environment" id="Environment_nb2vx"]
+background_mode = 2
+sky = SubResource("Sky_bwgqs")
 
 [node name="ocean" type="Node3D" unique_id=1323122401]
 script = ExtResource("1_tiovm")
 
 [node name="OceanMeshInstance3D" type="MeshInstance3D" parent="." unique_id=286864461]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -10.325134, 2.5437403, 8.583797)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -10.1922, 3.1470423, 8.445385)
 mesh = SubResource("PlaneMesh_j38dg")
+
+[node name="Camera3D" type="Camera3D" parent="." unique_id=53352794]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -18.00599, 77.99866, -2.6374512)
+script = ExtResource("3_nb2vx")
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="." unique_id=1854451497]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 266.7302, 0)
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="." unique_id=577601312]
+environment = SubResource("Environment_nb2vx")

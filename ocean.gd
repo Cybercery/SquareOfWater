@@ -1,166 +1,107 @@
 extends Node
 
 const SIZE = 256
+const NUM_CASCADES = 3
+const WIND_SPEEDS = [10.0, 6.0, 2.0] 
+const PATCH_SIZES = [512.0, 128.0, 32.0]
 
 var rd
-var shader
-var pipeline
 
-var evolved_texture
-var evolved_uniform_set
+# per-cascade arrays
+var spectrum_textures = []
+var spectrum_uniform_sets = []
+var evolved_textures = []
+var evolved_uniform_sets = []
+var ping_textures = []
+var pong_textures = []
+var fft_uniform_sets_ping = []
+var fft_uniform_sets_pong = []
+var fft_result_textures = []
 
+# shared shaders/pipelines
+var spectrum_shader
+var spectrum_pipeline
 var evolve_shader
 var evolve_pipeline
-
-var time_uniform_set
-
-var spectrum_texture
-var spectrum_uniform_set
-
-var ping_texture  
-var pong_texture  
-
-var butterfly_texture
-
 var fft_shader
 var fft_pipeline
-
-var fft_uniform_set
-
+var butterfly_texture
 var butterfly_sampler
 
-var fft_uniform_set_ping  # ping -> pong
-var fft_uniform_set_pong  # pong -> ping
-
-func create_spectrum_texture():
-
-	var format := RDTextureFormat.new()
-
-	format.width = SIZE
-	format.height = SIZE
-
-	format.format = RenderingDevice.DATA_FORMAT_R32G32B32A32_SFLOAT
-
-	format.usage_bits = (
-	RenderingDevice.TEXTURE_USAGE_STORAGE_BIT |
-	RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT |
-	RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT |
-	RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT )
-
-	spectrum_texture = rd.texture_create(format, RDTextureView.new())
-	
-func create_uniform_set():
-
-	var uniform := RDUniform.new()
-
-	uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_IMAGE
-
-	uniform.binding = 0
-
-	uniform.add_id(spectrum_texture)
-
-	spectrum_uniform_set = 	rd.uniform_set_create(
-			[uniform],
-			shader,
-			0
-		)
-
-func run_spectrum_compute():
-	var compute_list = rd.compute_list_begin()
-	rd.compute_list_bind_compute_pipeline(compute_list, pipeline)
-	rd.compute_list_bind_uniform_set(compute_list, spectrum_uniform_set, 0)
-	rd.compute_list_dispatch(compute_list, SIZE / 8, SIZE / 8, 1)
-	print("Dispatch groups: ", SIZE / 8, " x ", SIZE / 8)
-	rd.compute_list_end()
-	rd.submit()
-	rd.sync()
-
-func debug_save_spectrum():
-	# debug is GPTed i d k
-	# rd.barrier(RenderingDevice.BARRIER_MASK_ALL_BARRIERS) # deprecated now, old guide masdnlkn
-	
-	var data = rd.texture_get_data(spectrum_texture, 0)
-	# Print first few float values to see what's actually there
+# godot side
+var ocean_textures = []
+var ocean_material: ShaderMaterial
+func debug_print_fft_range():
+	var data = rd.texture_get_data(ping_textures[0], 0)
 	var floats = data.to_float32_array()
-	for i in range(min(16, floats.size())):
-		print("float[", i, "] = ", floats[i])
-	var image = Image.create_from_data(SIZE, SIZE, false, Image.FORMAT_RGBAF, data)
-	image.save_exr("user://spectrum.exr")
-	
-func create_evolved_texture():
+	var min_val = INF
+	var max_val = -INF
+	for i in range(0, floats.size(), 4):
+		min_val = min(min_val, floats[i])
+		max_val = max(max_val, floats[i])
+	print("Height range: ", min_val, " to ", max_val)
+func _ready():
+	rd = RenderingServer.create_local_rendering_device()
 
+	# load shaders
+	spectrum_shader = load_compute_shader("res://ocean_compute.glsl", "Spectrum")
+	spectrum_pipeline = rd.compute_pipeline_create(spectrum_shader)
+
+	evolve_shader = load_compute_shader("res://ocean_evolve.glsl", "Evolve")
+	evolve_pipeline = rd.compute_pipeline_create(evolve_shader)
+
+	fft_shader = load_compute_shader("res://fft_pass.glsl", "FFT")
+	fft_pipeline = rd.compute_pipeline_create(fft_shader)
+
+	butterfly_texture = create_butterfly_texture()
+	var sampler_state = RDSamplerState.new()
+	butterfly_sampler = rd.sampler_create(sampler_state)
+
+	# init cascades
+	for i in range(NUM_CASCADES):
+		spectrum_textures.append(create_rd_texture())
+		evolved_textures.append(create_rd_texture())
+		ping_textures.append(create_rd_texture())
+		pong_textures.append(create_rd_texture())
+		ocean_textures.append(ImageTexture.new())
+
+	# create uniform sets for each cascade
+	for i in range(NUM_CASCADES):
+		spectrum_uniform_sets.append(
+			create_single_image_uniform_set(spectrum_textures[i], spectrum_shader)
+		)
+		evolved_uniform_sets.append(
+			create_two_image_uniform_set(spectrum_textures[i], evolved_textures[i], evolve_shader)
+		)
+		fft_uniform_sets_ping.append(
+			create_fft_uniform_set(ping_textures[i], pong_textures[i])
+		)
+		fft_uniform_sets_pong.append(
+			create_fft_uniform_set(pong_textures[i], ping_textures[i])
+		)
+		fft_result_textures.append(ping_textures[i])
+
+	# run spectrum once per cascade
+	for i in range(NUM_CASCADES):
+		run_spectrum_compute(i)
+
+	ocean_material = $OceanMeshInstance3D.get_active_material(0)
+	if ocean_material == null:
+		push_error("No material found")
+
+func load_compute_shader(path: String, name: String):
+	var file = load(path)
+	var spirv = file.get_spirv()
+	var err = spirv.get_stage_compile_error(RenderingDevice.SHADER_STAGE_COMPUTE)
+	if err != "":
+		push_error(name + " compile error: " + err)
+	return rd.shader_create_from_spirv(spirv)
+
+func create_rd_texture():
 	var format := RDTextureFormat.new()
 	format.width = SIZE
 	format.height = SIZE
 	format.format = RenderingDevice.DATA_FORMAT_R32G32B32A32_SFLOAT
-	format.usage_bits = (RenderingDevice.TEXTURE_USAGE_STORAGE_BIT | 
-		RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT )
-	evolved_texture = rd.texture_create(format, RDTextureView.new())
-	
-func create_evolve_uniform_set():
-
-	var input_uniform := RDUniform.new()
-	input_uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_IMAGE
-	input_uniform.binding = 0
-	input_uniform.add_id(spectrum_texture)
-	var output_uniform := RDUniform.new()
-	output_uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_IMAGE
-	output_uniform.binding = 1
-	output_uniform.add_id(evolved_texture)
-
-
-	evolved_uniform_set = rd.uniform_set_create([input_uniform, output_uniform], evolve_shader, 0)
-
-func run_evolution_compute(time: float):
-	var push_constants = PackedFloat32Array([
-		time,
-		1000.0,
-		float(SIZE),
-		0.0
-	])
-	var compute_list = rd.compute_list_begin()
-	rd.compute_list_bind_compute_pipeline(compute_list, evolve_pipeline)
-	rd.compute_list_bind_uniform_set(compute_list, evolved_uniform_set, 0)
-	rd.compute_list_set_push_constant(
-		compute_list,
-		push_constants.to_byte_array(),
-		push_constants.to_byte_array().size()
-	)
-	rd.compute_list_dispatch(compute_list, SIZE / 8, SIZE / 8, 1)
-	rd.compute_list_end()
-	rd.submit()
-	rd.sync()  # wait for GPU to finish before next frame
-
-func debug_save_evolved():
-
-	# rd.sync()
-
-	var data = rd.texture_get_data(
-		evolved_texture,
-		0
-	)
-
-	var image = Image.create_from_data(
-		SIZE,
-		SIZE,
-		false,
-		Image.FORMAT_RGBAF,
-		data
-	)
-
-	image.save_exr(
-		"user://evolved.exr"
-	)
-
-func create_fft_texture():
-
-	var format := RDTextureFormat.new()
-
-	format.width = SIZE
-	format.height = SIZE
-
-	format.format = RenderingDevice.DATA_FORMAT_R32G32B32A32_SFLOAT
-
 	format.usage_bits = (
 		RenderingDevice.TEXTURE_USAGE_STORAGE_BIT |
 		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT |
@@ -168,53 +109,64 @@ func create_fft_texture():
 		RenderingDevice.TEXTURE_USAGE_CAN_COPY_TO_BIT |
 		RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT
 	)
+	return rd.texture_create(format, RDTextureView.new())
 
-	return rd.texture_create(
-		format,
-		RDTextureView.new()
-	)
+func create_single_image_uniform_set(tex, shader):
+	var u := RDUniform.new()
+	u.uniform_type = RenderingDevice.UNIFORM_TYPE_IMAGE
+	u.binding = 0
+	u.add_id(tex)
+	return rd.uniform_set_create([u], shader, 0)
+
+func create_two_image_uniform_set(input_tex, output_tex, shader):
+	var u0 := RDUniform.new()
+	u0.uniform_type = RenderingDevice.UNIFORM_TYPE_IMAGE
+	u0.binding = 0
+	u0.add_id(input_tex)
+	var u1 := RDUniform.new()
+	u1.uniform_type = RenderingDevice.UNIFORM_TYPE_IMAGE
+	u1.binding = 1
+	u1.add_id(output_tex)
+	return rd.uniform_set_create([u0, u1], shader, 0)
+
+func create_fft_uniform_set(input_tex, output_tex):
+	var u0 := RDUniform.new()
+	u0.uniform_type = RenderingDevice.UNIFORM_TYPE_IMAGE
+	u0.binding = 0
+	u0.add_id(input_tex)
+	var u1 := RDUniform.new()
+	u1.uniform_type = RenderingDevice.UNIFORM_TYPE_IMAGE
+	u1.binding = 1
+	u1.add_id(output_tex)
+	var u2 := RDUniform.new()
+	u2.uniform_type = RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE
+	u2.binding = 2
+	u2.add_id(butterfly_sampler)
+	u2.add_id(butterfly_texture)
+	return rd.uniform_set_create([u0, u1, u2], fft_shader, 0)
+
 func create_butterfly_texture():
-	var stages = int(log(SIZE) / log(2.0))  # = 8 for SIZE=256
+	var stages = int(log(SIZE) / log(2.0))
 	var data = PackedFloat32Array()
-
 	for stage in range(stages):
 		var step = 1 << (stage + 1)
 		var half_step = step >> 1
-
 		for x in range(SIZE):
 			var k = x % step
 			var i0: int
 			var i1: int
-
 			if k < half_step:
 				i0 = x
 				i1 = x + half_step
 			else:
 				i0 = x - half_step
 				i1 = x
-
-			var angle = -2.0 * PI * float(k % half_step) / float(step)
-			var wr = cos(angle)
-			var wi = sin(angle)
-
+			var angle = -2.0 * PI * float(k) / float(step)
 			data.push_back(float(i0))
 			data.push_back(float(i1))
-			data.push_back(wr)
-			data.push_back(wi)
-
+			data.push_back(cos(angle))
+			data.push_back(sin(angle))
 	var bytes = data.to_byte_array()
-
-	# width=SIZE, height=stages (e.g. 256x8)
-	var image = Image.create_from_data(
-		SIZE,
-		stages,
-		false,
-		Image.FORMAT_RGBAF,
-		bytes
-	)
-
-	image.save_exr("user://butterfly.exr")
-
 	var format := RDTextureFormat.new()
 	format.width = SIZE
 	format.height = stages
@@ -224,278 +176,104 @@ func create_butterfly_texture():
 		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT |
 		RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT
 	)
+	return rd.texture_create(format, RDTextureView.new(), [bytes])
 
-	var texture_data = [bytes]
-
-	return rd.texture_create(format, RDTextureView.new(), texture_data)
-
-func create_fft_uniform_set(input_tex, output_tex):
-
-	var input_uniform := RDUniform.new()
-	input_uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_IMAGE
-	input_uniform.binding = 0
-	input_uniform.add_id(input_tex)
-
-	var output_uniform := RDUniform.new()
-	output_uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_IMAGE
-	output_uniform.binding = 1
-	output_uniform.add_id(output_tex)
-
-	var butterfly_uniform := RDUniform.new()
-	butterfly_uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE
-	butterfly_uniform.binding = 2
-
-	butterfly_uniform.add_id(butterfly_sampler)
-	butterfly_uniform.add_id(butterfly_texture)
-
-	return rd.uniform_set_create(
-		[
-			input_uniform,
-			output_uniform,
-			butterfly_uniform
-		],
-		fft_shader,
-		0
-	)
-
-func run_fft_pass(stage: int, direction: int, uniform_set):
-
-	var push_constants = PackedInt32Array([
-		stage,
-		direction,
-		SIZE,
-		0
+func run_spectrum_compute(cascade: int):
+	var push_constants = PackedFloat32Array([
+		PATCH_SIZES[cascade],
+		WIND_SPEEDS[cascade],
+		float(SIZE),
+		float(cascade * 1000)
 	])
-
 	var compute_list = rd.compute_list_begin()
-
-	rd.compute_list_bind_compute_pipeline(
-		compute_list,
-		fft_pipeline
-	)
-
-	rd.compute_list_bind_uniform_set(
-		compute_list,
-		uniform_set,
-		0
-	)
-
+	rd.compute_list_bind_compute_pipeline(compute_list, spectrum_pipeline)
+	rd.compute_list_bind_uniform_set(compute_list, spectrum_uniform_sets[cascade], 0)
 	rd.compute_list_set_push_constant(
 		compute_list,
 		push_constants.to_byte_array(),
 		push_constants.to_byte_array().size()
 	)
-
-	rd.compute_list_dispatch(
-		compute_list,
-		SIZE / 8,
-		SIZE / 8,
-		1
-	)
-
+	rd.compute_list_dispatch(compute_list, SIZE / 8, SIZE / 8, 1)
 	rd.compute_list_end()
-
-func run_fft():
-	var stages = int(log(SIZE) / log(2.0))
-	var ping = true
-
-	# Horizontal FFT
-	for stage in range(stages):
-		var set = fft_uniform_set_ping if ping else fft_uniform_set_pong
-
-		run_fft_pass(stage, 0, set)
-		ping = !ping
-
-	# Vertical FFT
-	for stage in range(stages):
-		var set = fft_uniform_set_ping if ping else fft_uniform_set_pong
-
-		run_fft_pass(stage, 1, set)
-		ping = !ping
-
 	rd.submit()
 	rd.sync()
 	
-func debug_save_fft():
+	# Temporarily add to run_spectrum_compute after dispatch:
+	print("omega_p cascade 0: ", 2.0 * PI * 3.5 * (9.81 / 10.0) * pow(9.81 * 512.0 * 200.0 / (10.0 * 10.0), -0.333))
 
-	# rd.sync()
-
-	var data_ping = rd.texture_get_data(
-		ping_texture,
-		0
+func run_evolution_compute(cascade: int, time: float):
+	var push_constants = PackedFloat32Array([
+		time,
+		PATCH_SIZES[cascade],
+		float(SIZE),
+		0.0
+	])
+	var compute_list = rd.compute_list_begin()
+	rd.compute_list_bind_compute_pipeline(compute_list, evolve_pipeline)
+	rd.compute_list_bind_uniform_set(compute_list, evolved_uniform_sets[cascade], 0)
+	rd.compute_list_set_push_constant(
+		compute_list,
+		push_constants.to_byte_array(),
+		push_constants.to_byte_array().size()
 	)
+	rd.compute_list_dispatch(compute_list, SIZE / 8, SIZE / 8, 1)
+	rd.compute_list_end()
+	rd.submit()
+	rd.sync()
 
-	var image_ping = Image.create_from_data(
-		SIZE,
-		SIZE,
-		false,
-		Image.FORMAT_RGBAF,
-		data_ping
+func run_fft_pass(stage: int, direction: int, uniform_set):
+	var stages = int(log(SIZE) / log(2.0))
+	var push_constants = PackedInt32Array([stage, direction, SIZE, stages - 1])
+	var compute_list = rd.compute_list_begin()
+	rd.compute_list_bind_compute_pipeline(compute_list, fft_pipeline)
+	rd.compute_list_bind_uniform_set(compute_list, uniform_set, 0)
+	rd.compute_list_set_push_constant(
+		compute_list,
+		push_constants.to_byte_array(),
+		push_constants.to_byte_array().size()
 	)
+	rd.compute_list_dispatch(compute_list, SIZE / 8, SIZE / 8, 1)
+	rd.compute_list_end()
+	rd.submit()
+	rd.sync()
 
-	image_ping.convert(Image.FORMAT_RGBA8)
+func run_fft(cascade: int):
+	var stages = int(log(SIZE) / log(2.0))
+	var ping = true
 
-	image_ping.save_png(
-		"user://fft_ping.png"
-	)
-
-	var data_pong = rd.texture_get_data(
-		pong_texture,
-		0
-	)
-
-	var image_pong = Image.create_from_data(
-		SIZE,
-		SIZE,
-		false,
-		Image.FORMAT_RGBAF,
-		data_pong
-	)
-
-	image_pong.convert(Image.FORMAT_RGBA8)
-
-	image_pong.save_png(
-		"user://fft_pong.png"
-	)
-func _ready():
-
-	rd = RenderingServer.create_local_rendering_device()
-
-	var shader_file = load("res://ocean_compute.glsl")
-	var shader_spirv = shader_file.get_spirv()
-
-	print(
-		"Spectrum compile error: ",
-		shader_spirv.get_stage_compile_error(
-			RenderingDevice.SHADER_STAGE_COMPUTE
-		)
-	)
-
-	shader = rd.shader_create_from_spirv(shader_spirv)
-
-	print("Spectrum shader valid: ", shader.is_valid())
-
-	pipeline = rd.compute_pipeline_create(shader)
-
-	var evolve_file = load("res://ocean_evolve.glsl")
-	var evolve_spirv = evolve_file.get_spirv()
-
-	print(
-		"Evolution compile error: ",
-		evolve_spirv.get_stage_compile_error(
-			RenderingDevice.SHADER_STAGE_COMPUTE
-		)
-	)
-
-	evolve_shader = rd.shader_create_from_spirv(
-		evolve_spirv
-	)
-
-	evolve_pipeline = rd.compute_pipeline_create(
-		evolve_shader
-	)
-
-	var fft_file = load("res://fft_pass.glsl")
-	var fft_spirv = fft_file.get_spirv()
-
-	print(
-		"FFT compile error: ",
-		fft_spirv.get_stage_compile_error(
-			RenderingDevice.SHADER_STAGE_COMPUTE
-		)
-	)
-
-	fft_shader = rd.shader_create_from_spirv(
-		fft_spirv
-	)
-
-	print("FFT shader valid: ", fft_shader.is_valid())
-
-	fft_pipeline = rd.compute_pipeline_create(
-		fft_shader
-	)
-
-	create_spectrum_texture()
-
-	create_evolved_texture()
-
-	ping_texture = create_fft_texture()
-
-	pong_texture = create_fft_texture()
-
-	butterfly_texture = create_butterfly_texture()
-
-	var sampler_state = RDSamplerState.new()
-
-	butterfly_sampler = rd.sampler_create(
-		sampler_state
-	)
-
-	create_uniform_set()
-
-	create_evolve_uniform_set()
-
-	fft_uniform_set_ping = create_fft_uniform_set(
-		ping_texture,
-		pong_texture
-	)
-
-	fft_uniform_set_pong = create_fft_uniform_set(
-		pong_texture,
-		ping_texture
-	)
-
-	run_spectrum_compute()
 	rd.texture_copy(
-		spectrum_texture,
-		evolved_texture,
-		Vector3i(0, 0, 0),
-		Vector3i(0, 0, 0),
-		Vector3i(SIZE, SIZE, 1),
-		0,
-		0,
-		0,
-		0
+		evolved_textures[cascade], ping_textures[cascade],
+		Vector3i(0,0,0), Vector3i(0,0,0),
+		Vector3i(SIZE, SIZE, 1), 0, 0, 0, 0
 	)
+	rd.submit()
+	rd.sync()
 
-	rd.texture_copy(evolved_texture, ping_texture,
-		Vector3i(0, 0, 0),
-		Vector3i(0, 0, 0),
-		Vector3i(SIZE, SIZE, 1),
-		0,
-		0,
-		0,
-		0
-	)
-	
-	debug_save_spectrum()
+	for stage in range(stages):
+		var set = fft_uniform_sets_ping[cascade] if ping else fft_uniform_sets_pong[cascade]
+		run_fft_pass(stage, 0, set)
+		ping = !ping
 
-	print("Ocean initialization complete.")
-	
+	for stage in range(stages):
+		var set = fft_uniform_sets_ping[cascade] if ping else fft_uniform_sets_pong[cascade]
+		run_fft_pass(stage, 1, set)
+		ping = !ping
+
+	fft_result_textures[cascade] = ping_textures[cascade]
+
+func update_ocean_textures():
+	for i in range(NUM_CASCADES):
+		var data = rd.texture_get_data(fft_result_textures[i], 0)
+		if data.is_empty():
+			return
+		var image = Image.create_from_data(SIZE, SIZE, false, Image.FORMAT_RGBAF, data)
+		ocean_textures[i].set_image(image)
+		ocean_material.set_shader_parameter("heightfield_" + str(i), ocean_textures[i])
+
 func _process(_delta):
-
 	var time = Time.get_ticks_msec() * 0.001
-
-	run_evolution_compute(time)
-
-	# copy evolved spectrum into FFT input
-
-	rd.texture_copy(
-		evolved_texture,
-		ping_texture,
-		Vector3i(0, 0, 0),
-		Vector3i(0, 0, 0),
-		Vector3i(SIZE, SIZE, 1),
-		0,
-		0,
-		0,
-		0
-	)
-
-	run_fft()
-
-	if Input.is_action_just_pressed("ui_accept"):
-
-		debug_save_evolved()
-
-		debug_save_fft()
+	for i in range(NUM_CASCADES):
+		run_evolution_compute(i, time)
+		run_fft(i)
+	update_ocean_textures()
+	debug_print_fft_range()
